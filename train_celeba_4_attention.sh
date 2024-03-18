@@ -6,7 +6,7 @@ source activate diff_mri
 cd /home/lg/score-MRI/diffusion-generalization-mri
 
 python main_fastmri_new.py \
- --config=configs/ve/celeba_2.py \
- --eval_folder=/srv/local/lg/eval/celeba_2 \
+ --config=configs/ve/celeba_4_attention.py \
+ --eval_folder=/srv/local/lg/eval/celeba_4_attention \
  --mode='train'  \
- --workdir=/srv/local/lg/workdir/celeba_2
+ --workdir=/srv/local/lg/workdir/celeba_4_attention
