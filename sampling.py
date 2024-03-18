@@ -354,9 +354,9 @@ def get_pc_fouriercs_fast(sde, predictor, corrector, inverse_scaler, snr,
 
   return pc_fouriercs
 
-def get_pc_fouriercs_lambda(sde, predictor, corrector, inverse_scaler, snr,
+def get_jalal_sampling(sde, predictor, corrector, inverse_scaler, snr,
                           n_steps=1, probability_flow=False, continuous=False,
-                          denoise=True, eps=1e-5, save_progress=False, save_root=None, lambda_value=1):
+                          denoise=True, eps=1e-5, save_progress=False, save_root=None):
   """Create a PC sampler for solving compressed sensing problems as in MRI reconstruction.
 
   Args:
@@ -373,59 +373,126 @@ def get_pc_fouriercs_lambda(sde, predictor, corrector, inverse_scaler, snr,
   Returns:
     A CS solver function.
   """
-  # Define predictor & corrector
-  predictor_update_fn = functools.partial(shared_predictor_update_fn,
-                                          sde=sde,
-                                          predictor=predictor,
-                                          probability_flow=probability_flow,
-                                          continuous=continuous)
-  corrector_update_fn = functools.partial(shared_corrector_update_fn,
-                                          sde=sde,
-                                          corrector=corrector,
-                                          continuous=continuous,
-                                          snr=snr,
-                                          n_steps=n_steps)
 
-  def data_fidelity(mask, x, Fy, lambda_value):
-      """
-      Data fidelity operation for Fourier CS
-      x: Current aliased img
-      Fy: k-space measurement data (masked)
-      """
-      x = torch.real(ifft2(fft2(x) * (1. - lambda_value * mask) + lambda_value * Fy))
-      x_mean = torch.real(ifft2(fft2(x) * (1. - lambda_value * mask) + lambda_value * Fy))
-      return x, x_mean
-
-  def get_fouriercs_update_fn(update_fn, lambda_value):
-    """Modify the update function of predictor & corrector to incorporate data information."""
-
-    def fouriercs_update_fn(model, data, mask, x, t, Fy=None):
-      with torch.no_grad():
-        vec_t = torch.ones(data.shape[0], device=data.device) * t
-        x, x_mean = update_fn(x, vec_t, model=model)
-        x, x_mean = data_fidelity(mask, x, Fy, lambda_value)
-        return x, x_mean
-
-    return fouriercs_update_fn
-
-  projector_fouriercs_update_fn = get_fouriercs_update_fn(predictor_update_fn, lambda_value)
-  corrector_fouriercs_update_fn = get_fouriercs_update_fn(corrector_update_fn, lambda_value)
+  
 
   def pc_fouriercs(model, data, mask, Fy=None):
     with torch.no_grad():
       # Initial sample
-      x = torch.real(ifft2(Fy + fft2(sde.prior_sampling(data.shape).to(data.device)) * (1. - mask)))
+      score_fn = mutils.get_score_fn(sde, model, train=False, continuous=continuous)
+      #x = torch.real(ifft2(Fy + fft2(sde.prior_sampling(data.shape).to(data.device)) * (1. - mask)))
+      x = torch.randn_like(data)
       timesteps = torch.linspace(sde.T, eps, sde.N)
+      print(timesteps)
       for i in tqdm(range(sde.N), total=sde.N):
+        if sde.N == 2000 and i <= 1111:
+          continue
+        elif sde.N == 500 and i <= 280:
+          continue
+
         t = timesteps[i]
-        x, x_mean = corrector_fouriercs_update_fn(model, data, mask, x, t, Fy=Fy)
-        x, x_mean = projector_fouriercs_update_fn(model, data, mask, x, t, Fy=Fy)
-        if save_progress and i >= 300 and i % 100 == 0:
-          plt.imsave(save_root / f'step{i}.png', clear(x_mean), cmap='gray')
+
+        print(sde.discrete_sigmas[sde.N - i - 1])
+        step_size = 5e-5 * (sde.discrete_sigmas[sde.N - i - 1] / sde.sigma_min) ** 2
+        for _ in range(3):
+          noise = torch.randn_like(x) * torch.sqrt(2 * step_size)
+          p_grad = score_fn(x, torch.ones(data.shape[0], device=data.device) * t)
+          meas_grad = torch.real(ifft2(mask * fft2(x) - Fy))
+          meas_grad /= torch.norm(meas_grad)
+          meas_grad *= 5 * torch.norm(p_grad)
+
+          x = x + step_size * (p_grad - meas_grad) + noise
+          #x -= torch.min(x)
+          #x /= torch.max(x)
+
+      #print(x)
+      #print(torch.sum(x))
+      #x -= torch.min(x)
+      #x /= torch.max(x)
+
           
-      return inverse_scaler(x_mean if denoise else x)
+      return inverse_scaler(x)
 
   return pc_fouriercs
+
+
+def get_jalal_sampling_PI(sde, predictor, corrector, inverse_scaler, snr,
+                          n_steps=1, probability_flow=False, continuous=False,
+                          denoise=True, eps=1e-5, save_progress=False, save_root=None):
+  """Create a PC sampler for solving compressed sensing problems as in MRI reconstruction.
+
+  Args:
+    sde: An `sde_lib.SDE` object that represents the forward SDE.
+    predictor: A subclass of `sampling.Predictor` that represents a predictor algorithm.
+    corrector: A subclass of `sampling.Corrector` that represents a corrector algorithm.
+    inverse_scaler: The inverse data normalizer.
+    snr: A `float` number. The signal-to-noise ratio for the corrector.
+    n_steps: An integer. The number of corrector steps per update of the corrector.
+    continuous: `True` indicates that the score-based model was trained with continuous time.
+    denoise: If `True`, add one-step denoising to final samples.
+    eps: A `float` number. The reverse-time SDE/ODE is integrated to `eps` for numerical stability.
+
+  Returns:
+    A CS solver function.
+  """
+
+  
+
+  def pc_fouriercs(model, data, mask, sens, Fy=None):
+    with torch.no_grad():
+      # Initial sample
+      zf = torch.sum(torch.conj(sens) * data, dim=1)
+      # min = torch.min(torch.abs(zf))
+      max = torch.max(torch.abs(zf))
+      score_fn = mutils.get_score_fn(sde, model, train=False, continuous=continuous)
+      #x = torch.real(ifft2(Fy + fft2(sde.prior_sampling(data.shape).to(data.device)) * (1. - mask)))
+      x_r = torch.randn((1, 1) + data.shape[-2:], device=data.device)
+      x_i = torch.randn((1, 1) + data.shape[-2:], device=data.device)
+      x = x_r + 1j * x_i
+      timesteps = torch.linspace(sde.T, eps, sde.N)
+      # print(timesteps)
+      for i in tqdm(range(sde.N), total=sde.N):
+        if sde.N == 2000 and i <= 1111:
+          continue
+        elif sde.N == 500 and i <= 280:
+          continue
+
+        t = timesteps[i]
+
+        # print(sde.discrete_sigmas[sde.N - i - 1])
+        step_size = 5e-5 * (sde.discrete_sigmas[sde.N - i - 1] / sde.sigma_min) ** 2
+        for _ in range(3):
+          noise = torch.view_as_complex(torch.randn(x.shape + (2,), device=x.device)) * torch.sqrt(2 * step_size)
+          print(f'{noise.shape =}')
+          x_r = torch.real(x)
+          x_i = torch.imag(x)
+          p_grad_r = score_fn(x_r, torch.ones(data.shape[0], device=data.device) * t)
+          p_grad_i = score_fn(x_i, torch.ones(data.shape[0], device=data.device) * t)
+          p_grad = p_grad_r + 1j * p_grad_i
+          meas_grad = torch.sum(torch.conj(sens) * ifft2_m(mask * fft2_m(x * max * sens) - Fy), dim=1, keepdim=True) / max
+          print(meas_grad.shape)
+          meas_grad /= torch.norm(meas_grad)
+          meas_grad *= 5 * torch.norm(p_grad)
+
+          print(f'{x.device = }')
+          print(f'{p_grad.device = }')
+          print(f'{meas_grad.device = }')
+          print(f'{noise.device = }')
+
+          x = x + step_size * (p_grad - meas_grad) + noise
+          #x -= torch.min(x)
+          #x /= torch.max(x)
+
+      #print(x)
+      #print(torch.sum(x))
+      #x -= torch.min(x)
+      #x /= torch.max(x)
+
+          
+      return inverse_scaler(x * max)
+
+  return pc_fouriercs
+
 
 def get_pc_fouriercs_fast_CCDF(sde, predictor, corrector, inverse_scaler, snr,
                           n_steps=1, probability_flow=False, continuous=False,
@@ -649,7 +716,7 @@ def get_pc_fouriercs_RI_PI_SSOS(sde, predictor, corrector, inverse_scaler, snr,
 
 def get_pc_fouriercs_RI_coil_SENSE(sde, predictor, corrector, inverse_scaler, snr,
                                    n_steps=1, lamb_schedule=None, probability_flow=False, continuous=False,
-                                   denoise=True, eps=1e-5, sens=None, mask=None, m_steps=10,
+                                   denoise=True, eps=1e-5, mask=None, m_steps=10,
                                    save_progress=False, save_root=None):
   '''Every once in a while during separate coil reconstruction,
   apply SENSE data consistency and incorporate information.
@@ -671,20 +738,20 @@ def get_pc_fouriercs_RI_coil_SENSE(sde, predictor, corrector, inverse_scaler, sn
                                           n_steps=n_steps)
 
   # functions to impose data fidelity 1/2\|Ax - y\|^2
-  def data_fidelity(mask, x, x_mean, y):
-      x = ifft2_m(fft2_m(x) * (1. - mask) + y)
-      x_mean = ifft2_m(fft2_m(x_mean) * (1. - mask) + y)
-      return x, x_mean
+  # def data_fidelity(mask, x, x_mean, y):
+  #     x = ifft2_m(fft2_m(x) * (1. - mask) + y)
+  #     x_mean = ifft2_m(fft2_m(x_mean) * (1. - mask) + y)
+  #     return x, x_mean
 
-  def A(x, sens=sens, mask=mask):
+  def A(x, sens, mask=mask):
       return mask * fft2_m(sens * x)
 
-  def A_H(x, sens=sens, mask=mask):  # Hermitian transpose
+  def A_H(x, sens, mask=mask):  # Hermitian transpose
       return torch.sum(torch.conj(sens) * ifft2_m(x * mask), dim=1).unsqueeze(dim=1)
 
-  def kaczmarz(x, x_mean, y, lamb=1.0):
-      x = x + lamb * A_H(y - A(x))
-      x_mean = x_mean + lamb * A_H(y - A(x_mean))
+  def kaczmarz(x, x_mean, y, lamb=1.0, sense=None):
+      x = x + lamb * A_H(y - A(x, sens=sense), sens=sense)
+      x_mean = x_mean + lamb * A_H(y - A(x_mean, sens=sense), sens=sense)
       return x, x_mean
 
   def get_coil_update_fn(update_fn):
@@ -700,12 +767,12 @@ def get_pc_fouriercs_RI_coil_SENSE(sde, predictor, corrector, inverse_scaler, sn
         x_imag, x_imag_mean = update_fn(x_imag, vec_t, model=model)
 
         # merge real / imag values to form complex image
-        x = x_real + 1j * x_imag
-        x_mean = x_real_mean + 1j * x_imag_mean
+        x = torch.complex(x_real, x_imag)
+        x_mean = torch.complex(x_real_mean, x_imag_mean)
 
         # coil mask
-        mask_c = mask[0, 0, :, :].squeeze()
-        x, x_mean = data_fidelity(mask_c, x, x_mean, y)
+        # mask_c = mask[0, 0, :, :].squeeze()
+        # x, x_mean = data_fidelity(mask_c, x, x_mean, y)
         return x, x_mean
 
     return fouriercs_update_fn
@@ -713,11 +780,11 @@ def get_pc_fouriercs_RI_coil_SENSE(sde, predictor, corrector, inverse_scaler, sn
   predictor_coil_update_fn = get_coil_update_fn(predictor_update_fn)
   corrector_coil_update_fn = get_coil_update_fn(corrector_update_fn)
 
-  def pc_fouriercs(model, data, y=None):
+  def pc_fouriercs(model, data, y=None, sens=None):
     with torch.no_grad():
       # Initial sample: [1, 15, 320, 320] (dtype: torch.complex64)
-      x_r = sde.prior_sampling(data.shape).to(data.device)
-      x_i = sde.prior_sampling(data.shape).to(data.device)
+      x_r = sde.prior_sampling((1, 1) + data.shape[-2:]).to(data.device)
+      x_i = sde.prior_sampling((1, 1) + data.shape[-2:]).to(data.device)
       x = torch.complex(x_r, x_i)
       x_mean = x.clone().detach()
 
@@ -726,30 +793,24 @@ def get_pc_fouriercs_RI_coil_SENSE(sde, predictor, corrector, inverse_scaler, sn
       # number of iterations of PC sampler
       for i in tqdm(range(sde.N)):
         # coil x_c update
-        for c in range(15):
-          t = timesteps[i]
+        t = timesteps[i]
 
-          # slicing the dimension with c:c+1 ("one-element slice") preserves dimension
-          x_c = x[:, c:c+1, :, :]
-          y_c = y[:, c:c+1, :, :]
-          x_c, x_c_mean = predictor_coil_update_fn(model, data, x_c, t, y=y_c)
-          x_c, x_c_mean = corrector_coil_update_fn(model, data, x_c, t, y=y_c)
+        # slicing the dimension with c:c+1 ("one-element slice") preserves dimension
+        x, x_mean = predictor_coil_update_fn(model, data, x, t, y=y)
+        lamb = lamb_schedule.get_current_lambda(i)
+        x, x_mean = kaczmarz(x, x_mean, y, lamb=lamb, sense=sens)
 
-          # Assign coil dates to the global x, x_mean
-          x[:, c, :, :] = x_c
-          x_mean[:, c, :, :] = x_c_mean
+        x, x_mean = corrector_coil_update_fn(model, data, x, t, y=y)
+        lamb = lamb_schedule.get_current_lambda(i)
+        x, x_mean = kaczmarz(x, x_mean, y, lamb=lamb, sense=sens)
 
-        # global x update
-        if i % m_steps == 0:
-          lamb = lamb_schedule.get_current_lambda(i)
-          x, x_mean = kaczmarz(x, x_mean, y, lamb=lamb)
-        if save_progress:
-          if i % 100 == 0:
-            for c in range(15):
-              x_c = clear(x[:, c:c+1, :, :])
-              plt.imsave(save_root / 'recon' / f'coil{c}' / f'after{i}.png', np.abs(x_c), cmap='gray')
-            x_rss = clear(root_sum_of_squares(torch.abs(x), dim=1).squeeze())
-            plt.imsave(save_root / 'recon' / f'after{i}.png', x_rss, cmap='gray')
+        # if save_progress:
+        #   if i % 100 == 0:
+        #     for c in range(15):
+        #       x_c = clear(x[:, c:c+1, :, :])
+        #       plt.imsave(save_root / 'recon' / f'coil{c}' / f'after{i}.png', np.abs(x_c), cmap='gray')
+        #     x_rss = clear(root_sum_of_squares(torch.abs(x), dim=1).squeeze())
+        #     plt.imsave(save_root / 'recon' / f'after{i}.png', x_rss, cmap='gray')
 
       return inverse_scaler(x_mean if denoise else x)
 
