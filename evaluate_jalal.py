@@ -3,8 +3,7 @@ from models import utils as mutils
 from sde_lib import VESDE
 from sampling import (ReverseDiffusionPredictor,
                       LangevinCorrector,
-                      get_pc_fouriercs_RI,
-                      get_pc_fouriercs_fast)
+                      get_jalal_sampling)
 from models import ncsnpp
 import time
 from utils import (fft2, ifft2, get_mask, get_data_scaler, 
@@ -54,8 +53,6 @@ def main():
     np.random.seed(config.seed)
     if args.mask_type == 'radial':
         mask = get_radial_mask((320, 320), 29, np.pi / 29)
-    elif args.mask_type == 'outer':
-        mask = get_outer_mask(args.cutout)
     else:
         mask = get_mask(torch.zeros((1, 1, 320, 320)), img_size, batch_size,
                         type=args.mask_type,
@@ -88,7 +85,7 @@ def main():
 
     # Specify save directory for saving generated samples
     print(args.center_fraction)
-    save_root = Path(f'./results/{args.model}' + ('' if args.mask_type == 'gaussian1d' else f'_{args.mask_type}') + (f'_{args.cutout}' if args.mask_type == 'outer' else '') + ('' if args.center_fraction == 0.08 else f'_CF_0{str(args.center_fraction)[2:]}') + ('' if args.acc_factor == 4 else f'_AF_{args.acc_factor}') + ('' if args.N == 2000 else f'_N_{args.N}') + ('_FS' if fat_suppression else '') + ('_brain' if brain else '') + '_no_norm')
+    save_root = Path(f'/srv/local/lg/jalal/{args.model}' + ('' if args.mask_type == 'gaussian1d' else f'_{args.mask_type}') + ('' if args.center_fraction == 0.08 else f'_CF_0{str(args.center_fraction)[2:]}') + ('' if args.acc_factor == 4 else f'_AF_{args.acc_factor}') + ('' if args.N == 2000 else f'_N_{args.N}') + ('_FS' if fat_suppression else '') + ('_brain' if brain else '') + '_no_norm')
     save_root.mkdir(parents=True, exist_ok=True)
 
     mask_sv = mask.squeeze().cpu().detach().numpy()
@@ -102,33 +99,24 @@ def main():
         test_dl = mydata.create_brain_dataloader()
     else:
         _, test_dl = mydata.create_dataloader(config, fat_suppression=fat_suppression)
-    psnr_values = np.zeros(len(test_dl))
-    ssim_values = np.zeros(len(test_dl))
-    nmse_values = np.zeros(len(test_dl))
-    prediction_times = np.zeros((len(test_dl)))
+    psnr_values = np.loadtxt(os.path.join(save_root, 'psnr_values.csv'), delimiter=',')  # np.zeros(len(test_dl))
+    ssim_values = np.loadtxt(os.path.join(save_root, 'ssim_values.csv'), delimiter=',')  # np.zeros(len(test_dl))
+    nmse_values = np.loadtxt(os.path.join(save_root, 'nmse_values.csv'), delimiter=',')  # np.zeros(len(test_dl))
+    prediction_times = np.loadtxt(os.path.join(save_root, 'prediction_times.csv'), delimiter=',')  # np.zeros((len(test_dl)))
 
     ###############################################
     # 2. Inference
     ###############################################
 
-    if use_complex:
-        pc_fouriercs = get_pc_fouriercs_RI(sde,
-                                        predictor, corrector,
-                                        inverse_scaler,
-                                        snr=snr,
-                                        n_steps=m,
-                                        probability_flow=probability_flow,
-                                        continuous=config.training.continuous,
-                                        denoise=True)
-    else:
-        pc_fouriercs = get_pc_fouriercs_fast(sde,
-                                         predictor, corrector,
-                                         inverse_scaler,
-                                         snr=snr,
-                                         n_steps=m,
-                                         probability_flow=probability_flow,
-                                         continuous=config.training.continuous,
-                                         denoise=True)
+    
+    pc_fouriercs = get_jalal_sampling(sde,
+                                      predictor, corrector,
+                                      inverse_scaler,
+                                      snr=snr,
+                                      n_steps=m,
+                                      probability_flow=probability_flow,
+                                      continuous=True,
+                                      denoise=True)
     
     for i, img in enumerate(test_dl):
         print(f'reconstructing slice {i + 1} of {len(test_dl)}')
@@ -142,9 +130,6 @@ def main():
         if not use_complex:
             img = torch.real(img)
             under_img = torch.real(under_img)
-        if args.mask_type == 'outer':
-            under_img = normalize(under_img)
-            under_kspace = fft2(under_img)
 
         tic = time.time()
         x = pc_fouriercs(score_model, scaler(under_img), mask, Fy=under_kspace)
@@ -171,8 +156,7 @@ def create_argparser():
     parser.add_argument('--model', type=str, help='which config file to use', required=True)
     parser.add_argument('--mask_type', type=str, help='which mask to use for retrospective undersampling.'
                                                       '(NOTE) only used for retrospective model!', default='gaussian1d',
-                        choices=['gaussian1d', 'uniform1d', 'gaussian2d', 'poisson', 'radial', 'outer'])
-    parser.add_argument('--cutout', type=int, help='Size of the cutout if outer mask is used.', default=0)
+                        choices=['gaussian1d', 'uniform1d', 'gaussian2d', 'poisson', 'radial'])
     parser.add_argument('--acc_factor', type=int, help='Acceleration factor for Fourier undersampling.'
                                                        '(NOTE) only used for retrospective model!', default=4)
     parser.add_argument('--center_fraction', type=float, help='Fraction of ACS region to keep.'

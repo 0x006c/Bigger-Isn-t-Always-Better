@@ -7,7 +7,9 @@ from sampling import (ReverseDiffusionPredictor,
                       get_pc_fouriercs_fast)
 from models import ncsnpp
 import time
-from utils import fft2, ifft2, get_mask, get_data_scaler, get_data_inverse_scaler, restore_checkpoint, normalize_complex, normalize, ifft2_m, fft2_m, SSIM, nmse, psnr, get_radial_mask, get_outer_mask
+from utils import (fft2, ifft2, get_mask, get_data_scaler, 
+                   get_data_inverse_scaler, restore_checkpoint, 
+                   SSIM, nmse, psnr, get_radial_mask)
 import torch
 import torch.nn as nn
 import numpy as np
@@ -15,7 +17,6 @@ from models.ema import ExponentialMovingAverage
 import matplotlib.pyplot as plt
 import importlib
 import argparse
-import h5py
 from torchvision.transforms.functional import center_crop
 from torchvision.transforms.v2.functional import vertical_flip
 import mydata
@@ -51,11 +52,6 @@ def main():
     img_size = config.data.image_size
     batch_size = 1
 
-    # Read data
-    # img = normalize_complex(ifft2_m(center_crop(torch.from_numpy(h5py.File(filename, 'r')['kspace'][18]), (320,320))))
-    # img = img.view(1, 1, 320, 320)
-    # img = img.to(config.device)
-
     np.random.seed(config.seed)
     if args.mask_type == 'radial':
         mask = get_radial_mask((320, 320), 29, np.pi / 29)
@@ -65,8 +61,7 @@ def main():
                         acc_factor=args.acc_factor,
                         center_fraction=args.center_fraction).to(config.device)
     
-    # ckpt_filename = f"./weights/checkpoint_95.pth"
-    ckpt_filename = f'/srv/local/lg/workdir/{args.model}/checkpoints/checkpoint.pth'
+    ckpt_filename = f'/srv/local/---/workdir/{args.model}/checkpoints/checkpoint.pth'
     sde = VESDE(sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=N)
 
     config.training.batch_size = batch_size
@@ -99,7 +94,6 @@ def main():
 
     np.save(str(save_root) + '/mask.npy', mask_sv)
     plt.imsave(str(save_root) + '/mask.png', mask_sv, cmap='gray')
-
 
     ssim = SSIM().cuda()
     if brain:
@@ -136,8 +130,6 @@ def main():
     
     for i, img in enumerate(test_dl):
         print(f'reconstructing slice {i + 1} of {len(test_dl)}')
-        # fft
-        # plt.imsave(str(save_root) + f'/input_{i}.png', img.squeeze().cpu().detach().numpy(), cmap='gray')
         img = img.view(1, 1, 320, 320)
         img = img.to(config.device)
         img = vertical_flip(img)
@@ -151,7 +143,6 @@ def main():
             under_img = torch.real(under_img)
 
         tic = time.time()
-        #x = normalize(pc_fouriercs(score_model, scaler(under_img), mask, Fy=under_kspace))
         x = pc_fouriercs(score_model, scaler(under_img), mask, Fy=under_kspace)
         prediction_times[i] = time.time() - tic
         psnr_values[i] = psnr(x, img)
@@ -163,11 +154,7 @@ def main():
         np.savetxt(os.path.join(save_root, 'ssim_values.csv'), ssim_values, delimiter=',')
         recon = x.squeeze().cpu().detach().numpy()
         plt.imsave(str(save_root) + f'/recon_{i}.png', recon, cmap='gray')
-        # plt.imsave(str(save_root) + f'/input_{i}.png', under_img.squeeze().cpu().detach().numpy(), cmap='gray')
-
-    ###############################################
-    # 3. Saving recon
-    ###############################################
+        np.save(str(save_root) + f'/recon_{i}', recon)
     
     print(f'Number of Parameters: {sum(p.numel() for p in score_model.parameters())}')
     print(f'Number of Trainable Parameters: {sum(p.numel() for p in score_model.parameters() if p.requires_grad)}')
