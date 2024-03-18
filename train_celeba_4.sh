@@ -4,10 +4,10 @@
 
 
 source activate diff_mri
-cd /home/lg/score-MRI/diffusion-generalization-mri
+cd /home/---/score-MRI/diffusion-generalization-mri
 
 python main_fastmri_new.py \
  --config=configs/ve/celeba_4.py \
- --eval_folder=/srv/local/lg/eval/celeba_4 \
+ --eval_folder=/srv/local/---/eval/celeba_4 \
  --mode='train'  \
- --workdir=/srv/local/lg/workdir/celeba_4
+ --workdir=/srv/local/---/workdir/celeba_4
