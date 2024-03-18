@@ -1,8 +1,6 @@
 # Bigger Isn't Always Better: Towards a General Prior for MRI Reconstruction
 
-[![arXiv](https://img.shields.io/badge/arXiv-2110.05243-red)](https://arxiv.org/abs/2110.05243)
-
-Contains the Code from ---insert arXiv link---. This repository was modified from [scoreMRI](https://github.com/HJ-harry/score-MRI).
+Contains the Code from the corresponding ECCV submission. This repository was modified from [scoreMRI](https://github.com/HJ-harry/score-MRI).
 
 ## Usage
 We have tested the implementation with Python 3.11, ```requirements.txt``` lists all dependencies. Make sure to set the dataset root in the config files and ```mydata.py```.
