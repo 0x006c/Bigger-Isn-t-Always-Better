@@ -9,6 +9,7 @@ import pandas as pd
 import torch as th
 import pickle
 import random
+import matplotlib.pyplot as plt
 
 from utils import fft2, ifft2, get_mask, get_data_scaler, get_data_inverse_scaler, restore_checkpoint, normalize_complex, ifft2_m, fft2_m, normalize
 from torchvision.transforms.functional import center_crop
@@ -45,9 +46,10 @@ class MRIDataset(DataLoader):
         return len(self.data)
     
 class MRITestDataset(DataLoader):
-    def __init__(self, root, split='test', fat_suppression=False, is_complex=True):
+    def __init__(self, root, split='test', fat_suppression=False, is_complex=True, PI=False):
         self.root = root
         self.is_complex = is_complex
+        self.PI = PI
         if split == 'test' and fat_suppression == False:
             self.filenames = open(f'./split/corpd/validation.txt', 'r').read().splitlines()
             self.filenames += open(f'./split/corpd/test.txt', 'r').read().splitlines()
@@ -64,18 +66,22 @@ class MRITestDataset(DataLoader):
         filename = self.data[idx][0]
         slice = self.data[idx][1]
         file = h5py.File(self.root / filename, 'r')
-        data = normalize(th.from_numpy(file['reconstruction_rss'][len(file['reconstruction_rss']) // 2 + slice]))
+        if self.PI:
+            data = normalize_complex(center_crop(ifft2_m(th.from_numpy(file['kspace'][len(file['reconstruction_rss']) // 2 + slice])), (320, 320)))
+        else:
+            data = normalize(th.from_numpy(file['reconstruction_rss'][len(file['reconstruction_rss']) // 2 + slice]))
         return data
 
     def __len__(self):
         return len(self.data)
     
 class MRITestBrainDataset(DataLoader):
-    def __init__(self, root, split='test', is_complex=True):
+    def __init__(self, root, split='test', is_complex=True, PI=False):
         self.root = root
         self.is_complex = is_complex
         self.filenames = open(f'./split/brain/test_selected.txt', 'r').read().splitlines()
         self.data = []
+        self.PI = PI
         for filename in self.filenames:
             self.data.extend(select_brain_slices(filename, 5))
 
@@ -84,7 +90,14 @@ class MRITestBrainDataset(DataLoader):
         filename = self.data[idx][0]
         slice = self.data[idx][1]
         file = h5py.File(self.root / filename, 'r')
-        data = normalize(center_crop(th.from_numpy(file['reconstruction_rss'][slice]), (320, 320)))
+        if self.PI:
+            data = center_crop(ifft2_m(th.from_numpy(file['kspace'][slice])), (320, 320))
+            print(data.shape)
+            print(th.sum(data, axis=0).shape)
+            print(center_crop(th.from_numpy(file['reconstruction_rss'][slice]), (320, 320)).shape)
+            print(th.sum(th.sum(data, axis=0) - center_crop(th.from_numpy(file['reconstruction_rss'][slice]), (320, 320))))
+        else:
+            data = normalize(center_crop(th.from_numpy(file['reconstruction_rss'][slice]), (320, 320)))
         return data
 
     def __len__(self):
@@ -136,28 +149,28 @@ class MRIDataset_infer(DataLoader):
         return len(self.data)
 
 
-def create_dataloader(configs, evaluation=False, sort=True, fat_suppression=False):
+def create_dataloader(evaluation=False, sort=True, fat_suppression=False, PI=False):
     shuffle = True if not evaluation else False
-    train_dataset = MRIDataset(Path('/srv/local/lg/FAST_MRI') / f'singlecoil_train')
-    val_dataset = MRITestDataset(Path('/srv/local/lg/FAST_MRI') / f'singlecoil_val', fat_suppression=fat_suppression)
+    train_dataset = MRIDataset(Path('/srv/local/---/FAST_MRI') / f'singlecoil_train')
+    val_dataset = MRITestDataset(Path('/srv/local/---/FAST_MRI') / f'multicoil_val', fat_suppression=fat_suppression, PI=PI)
 
     train_loader = DataLoader(
         dataset=train_dataset,
-        batch_size=configs.training.batch_size,
+        batch_size=1, #configs.training.batch_size,
         shuffle=shuffle,
         drop_last=True
     )
     val_loader = DataLoader(
         dataset=val_dataset,
-        batch_size=configs.training.batch_size,
+        batch_size=1, #configs.training.batch_size,
         shuffle=False,
         # shuffle=True,
         drop_last=True
     )
     return train_loader, val_loader
 
-def create_brain_dataloader():
-    val_dataset = MRITestBrainDataset(Path('/srv/local/lg/Brain_MRI') / f'multicoil_test_full')
+def create_brain_dataloader(PI=False):
+    val_dataset = MRITestBrainDataset(Path('/srv/local/---/Brain_MRI') / f'multicoil_test_full', PI=PI)
     val_loader = DataLoader(
         dataset=val_dataset,
         batch_size=1,
@@ -167,7 +180,7 @@ def create_brain_dataloader():
     return val_loader
 
 def create_prostate_dataloader():
-    val_dataset = MRITestProstateDataset(Path('/data/glaszner/prostate') / f'test_T2_1')
+    val_dataset = MRITestProstateDataset(Path('/data/---/prostate') / f'test_T2_1')
     val_loader = DataLoader(
         dataset=val_dataset,
         batch_size=1,
@@ -208,7 +221,7 @@ class CelebADataset(DataLoader):
         return len(self.data)
 
 def create_celeba_dataloader(size):
-    train_dataset = CelebADataset('/srv/local/lg/CelebA-HQ-img', size)
+    train_dataset = CelebADataset('/srv/local/---/CelebA-HQ-img', size)
     train_loader = DataLoader(
         dataset=train_dataset,
         batch_size=1,
@@ -216,22 +229,3 @@ def create_celeba_dataloader(size):
         drop_last=True
     )
     return train_loader
-
-def create_dataloader_regression(configs, evaluation=False):
-  shuffle = True if not evaluation else False
-  train_dataset = fastmri_knee(Path(configs.root) / f'knee_{configs.image_size}_train')
-  val_dataset = fastmri_knee_infer(Path(configs.root) / f'knee_{configs.image_size}_val')
-
-  train_loader = DataLoader(
-    dataset=train_dataset,
-    batch_size=configs.batch_size,
-    shuffle=shuffle,
-    drop_last=True
-  )
-  val_loader = DataLoader(
-    dataset=val_dataset,
-    batch_size=configs.batch_size,
-    shuffle=False,
-    drop_last=True
-  )
-  return train_loader, val_loader
